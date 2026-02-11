@@ -1,0 +1,108 @@
+name: Build LibreELEC 12.2 for S912 PCDN
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release标签（如v12.2-s912-202602）'
+        required: true
+        default: 'v12.2-s912-pcdn'
+      release_name:
+        description: 'Release名称'
+        required: true
+        default: 'LibreELEC 12.2 S912 PCDN 专用版'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout 源码
+        uses: actions/checkout@v4
+        with:
+          repository: dtechsrv/LibreELEC-AML
+          ref: 12.2
+
+      - name: 缓存 ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: 清理系统空间
+        run: |
+          sudo rm -rf /opt/hostedtoolcache /usr/share/dotnet /root/.cache /root/.gradle
+          sudo apt clean
+          sudo apt autoremove -y
+          df -h
+
+      - name: 安装编译依赖
+        run: |
+          sudo apt update
+          sudo apt install -y git build-essential gawk wget diffstat unzip texinfo gcc-multilib \
+            chrpath socat cpio python3 python3-pip python3-pexpect xz-utils debianutils \
+            iputils-ping python3-git python3-jinja2 libegl1-mesa libsdl1.2-dev xterm \
+            u-boot-tools dtc ccache
+
+      - name: 配置 ccache
+        run: |
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+          echo "PATH=/usr/lib/ccache:$PATH" >> $GITHUB_ENV
+
+      # ---------- 唯一修改：使用仓库内预置的 options.custom 文件 ----------
+      - name: 应用 S912 优化配置
+        run: |
+          cp -v projects/S912/options.custom projects/S912/options
+          echo "已应用自定义配置"
+
+      - name: 编译S912版LibreELEC 12.2
+        run: |
+          set -euo pipefail
+          PROJECT=Amlogic DEVICE=S912 ARCH=arm make image -j$(nproc)
+
+      - name: 打包镜像
+        run: |
+          set -euo pipefail
+          cd target
+          IMG_FILE=$(ls LibreELEC-*.img | head -1)
+          if [ -z "$IMG_FILE" ]; then
+            echo "错误：未找到镜像文件！" >&2
+            exit 1
+          fi
+          mv -v "$IMG_FILE" librelec-12.2-s912-pcdn.img
+          gzip -9 librelec-12.2-s912-pcdn.img
+          sha256sum librelec-12.2-s912-pcdn.img.gz > librelec-12.2-s912-pcdn.img.gz.sha256
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LibreELEC-12.2-S912-PCDN
+          path: |
+            target/librelec-12.2-s912-pcdn.img.gz
+            target/librelec-12.2-s912-pcdn.img.gz.sha256
+
+      - name: 获取编译时间
+        id: date
+        run: echo "date=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: 创建并上传Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: ${{ github.event.inputs.release_name }}
+          files: |
+            target/librelec-12.2-s912-pcdn.img.gz
+            target/librelec-12.2-s912-pcdn.img.gz.sha256
+          body: |
+            ## LibreELEC 12.2 S912 PCDN盒子专用版
+            - 适配S912芯片（GXM家族）
+            - 内核：amlogic-3.14（稳定版）
+            - 内置PCDN常用无线网卡驱动（RTL8192/8812/8821等）
+            - 支持1G/2G内存盒子
+            - ADDON_VERSION 已修复，插件源可用
+            - 编译时间：${{ steps.date.outputs.date }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
