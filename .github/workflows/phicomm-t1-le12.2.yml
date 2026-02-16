@@ -1,0 +1,290 @@
+# GitHub Actions 自动化编译配置：斐讯T1 (S912) LibreELEC 12.2
+# 功能：自动编译适配斐讯T1的LibreELEC 12.2镜像，包含T1专属U-Boot/设备树适配
+# 触发方式：main/master分支推送、手动触发
+name: Build LibreELEC 12.2 for Phicomm T1 (S912)
+
+# 触发条件配置
+on:
+  push:
+    branches: [ main, master ]
+    paths-ignore:  # 忽略非关键文件推送，避免不必要的编译
+      - 'README.md'
+      - '.gitignore'
+      - 'docs/**'
+  workflow_dispatch:  # 支持手动触发（GitHub页面点击Run workflow）
+
+# 全局环境变量（全流程共用）
+env:
+  # LibreELEC编译核心参数
+  PROJECT_NAME: "Amlogic"
+  DEVICE_NAME: "AMLGX"          # 官方12.2统一用AMLGX覆盖GXBB/GXL/GXM
+  ARCH: "aarch64"               # S912是64位ARM架构
+  # 斐讯T1硬件适配参数
+  DTB_FILE: "gxm_q200_2g.dtb"   # 斐讯T1 2G版专属设备树
+  IMAGE_NAME: "LibreELEC-Phicomm-T1-12.2.img.gz"  # 最终镜像文件名
+  # 路径配置（GitHub Actions内置工作目录）
+  WORKSPACE: ${{ github.workspace }}
+  LIBREELEC_SRC_DIR: ${{ github.workspace }}
+  # 依赖仓库配置
+  DEVICE_TREE_REPO: "https://github.com/LibreELEC/device-trees-amlogic.git"
+  FIP_REPO: "https://github.com/LibreELEC/amlogic-boot-fip.git"
+
+# 作业定义（按顺序执行：准备→编译→归档）
+jobs:
+  # ========== 阶段1：环境准备与依赖安装 ==========
+  prepare-environment:
+    runs-on: ubuntu-22.04  # 官方推荐的编译环境
+    timeout-minutes: 30    # 超时时间（避免卡壳）
+    steps:
+      - name: 📥 拉取LibreELEC源码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # 浅克隆加速（仅拉取最新提交）
+          path: ${{ env.LIBREELEC_SRC_DIR }}
+
+      - name: 🔧 更新系统并安装编译依赖
+        run: |
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          # 安装LibreELEC 12.2编译必需的依赖
+          sudo apt-get install -y --no-install-recommends \
+            make gcc g++ git gawk bzip2 cpio rsync wget file bc \
+            u-boot-tools python3 python3-distutils libncurses5-dev \
+            liblz4-tool device-tree-compiler dosfstools mtools \
+            unzip zip xz-utils kmod sudo
+          # 验证关键工具版本
+          echo "✅ 依赖安装完成，关键工具版本："
+          gcc --version | head -1
+          python3 --version
+          make --version
+
+      - name: 🔍 校验LibreELEC项目结构
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          if [ ! -d "projects/${{ env.PROJECT_NAME }}" ]; then
+            echo "❌ 错误：未找到 projects/${{ env.PROJECT_NAME }} 目录"
+            ls -la projects/
+            exit 1
+          fi
+          if [ ! -f "Makefile" ]; then
+            echo "❌ 错误：未找到LibreELEC根目录Makefile"
+            exit 1
+          fi
+          echo "✅ LibreELEC项目结构验证通过"
+
+      - name: 💾 缓存编译依赖（加速后续编译）
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.LIBREELEC_SRC_DIR }}/dl
+            ${{ env.LIBREELEC_SRC_DIR }}/build
+          key: ${{ runner.os }}-libreelec-12.2-${{ hashFiles('**/Makefile', '**/*.conf') }}
+          restore-keys: |
+            ${{ runner.os }}-libreelec-12.2-
+
+      - name: 📤 上传准备阶段产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepared-environment
+          path: ${{ env.LIBREELEC_SRC_DIR }}
+          retention-days: 1  # 产物保留1天（节省空间）
+
+  # ========== 阶段2：核心编译（依赖准备阶段） ==========
+  build-image:
+    runs-on: ubuntu-22.04
+    needs: prepare-environment
+    timeout-minutes: 180  # 编译耗时较长，设置3小时超时
+    steps:
+      - name: 📥 下载准备阶段产物
+        uses: actions/download-artifact@v4
+        with:
+          name: prepared-environment
+          path: ${{ env.LIBREELEC_SRC_DIR }}
+
+      - name: 📦 获取斐讯T1专属设备树（固定12.2版本）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          # 克隆官方12.2分支的设备树仓库（避免版本不兼容）
+          git clone --depth 1 --branch libreelec-12.2 ${{ env.DEVICE_TREE_REPO }}
+          # 验证设备树文件是否存在
+          if [ -f "device-trees-amlogic/${{ env.DTB_FILE }}" ]; then
+            echo "✅ 找到斐讯T1专属设备树：${{ env.DTB_FILE }}"
+            # 创建设备树存放目录
+            mkdir -p "projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/"
+            # 复制设备树到指定位置
+            cp -v "device-trees-amlogic/${{ env.DTB_FILE }}" "projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/"
+          else
+            echo "❌ 错误：未找到斐讯T1设备树 ${{ env.DTB_FILE }}"
+            echo "可用的dtb文件列表："
+            ls device-trees-amlogic/*.dtb | head -20
+            exit 1
+          fi
+
+      - name: 🔧 设置默认启动设备树（dtb.img）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          DTB_SOURCE="projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/${{ env.DTB_FILE }}"
+          DTB_DEST="projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/dtb.img"
+          # 复制并验证
+          if [ -f "${DTB_SOURCE}" ]; then
+            cp -vf "${DTB_SOURCE}" "${DTB_DEST}"
+            ls -lh "${DTB_DEST}"
+            echo "✅ 已设置默认启动设备树为：${{ env.DTB_FILE }}"
+          else
+            echo "❌ 错误：设备树源文件不存在"
+            exit 1
+          fi
+
+      - name: 🔧 适配Extlinux启动配置（强制加载T1设备树）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          EXTLINUX_DIR="projects/${{ env.PROJECT_NAME }}/bootloader/extlinux"
+          if [ -d "${EXTLINUX_DIR}" ]; then
+            echo "✅ 找到Extlinux配置目录，开始修改..."
+            # 遍历所有extlinux.conf文件
+            find "${EXTLINUX_DIR}" -name "extlinux.conf" | while read conf; do
+              # 备份原配置
+              cp -v "$conf" "$conf.bak"
+              # 强制设置FDT指向T1设备树
+              sed -i 's|^[[:space:]]*FDT.*|  FDT /dtb.img|' "$conf"
+              # 若没有FDT行则添加
+              if ! grep -q "^[[:space:]]*FDT" "$conf"; then
+                echo "  FDT /dtb.img" >> "$conf"
+              fi
+              # 验证修改结果
+              echo "✅ 已修改配置文件：$conf"
+              cat "$conf" | grep -E "FDT|LABEL"
+            done
+          else
+            echo "⚠️  未找到Extlinux目录，适配传统启动脚本..."
+            # 适配传统U-Boot启动脚本
+            find "projects/${{ env.PROJECT_NAME }}/bootloader" -name "*.script" -o -name "*.scr" -o -name "aml_autoscript" | while read file; do
+              if grep -q "bootm" "$file" 2>/dev/null; then
+                cp -v "$file" "$file.bak"
+                sed -i 's/bootm/booti/g' "$file"
+                echo "✅ 已修改传统启动脚本：$file"
+              fi
+            done
+          fi
+
+      - name: 🔧 编译并替换斐讯T1专属U-Boot（解决红外/电源键）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          # 克隆amlogic-boot-fip仓库（用于打包T1专属U-Boot）
+          git clone --depth 1 ${{ env.FIP_REPO }}
+          cd amlogic-boot-fip
+          
+          # 基于GXM模板创建斐讯T1配置（S912属于GXM系列）
+          cp -r odroid-n2 phicomm-t1
+          
+          # 下载斐讯T1专属bl301.bin（解决红外遥控/电源键问题）
+          # 源地址为开源社区验证过的T1专用版本
+          wget -q -O phicomm-t1/bl301.bin https://raw.githubusercontent.com/ophub/amlogic-s9xxx-openwrt/main/amlogic-boot-fip/bl301/bin/gxm/bl301.bin
+          if [ ! -f "phicomm-t1/bl301.bin" ]; then
+            echo "❌ 错误：下载T1专属bl301.bin失败"
+            exit 1
+          fi
+          
+          # 打包T1专属U-Boot（输入为源码中的u-boot.bin）
+          mkdir -p u-boot-output
+          ./build-fip.sh phicomm-t1 "../projects/${{ env.PROJECT_NAME }}/bootloader/u-boot.bin" u-boot-output
+          
+          # 验证打包结果并替换
+          if [ -f "u-boot-output/u-boot.bin.sd.bin" ]; then
+            cp -v "u-boot-output/u-boot.bin.sd.bin" "../projects/${{ env.PROJECT_NAME }}/bootloader/"
+            echo "✅ T1专属U-Boot打包并替换完成"
+          else
+            echo "❌ 错误：U-Boot打包失败"
+            ls -lh u-boot-output/
+            exit 1
+          fi
+
+      - name: ⚙️ 编译LibreELEC镜像（安全核心数+失败重试）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          # 计算安全核心数（保留2核，避免GitHub Runner资源耗尽）
+          TOTAL_CORES=$(nproc)
+          MAX_JOBS=$(( TOTAL_CORES - 2 ))
+          # 兜底：至少使用2核
+          if [ $MAX_JOBS -lt 2 ]; then
+            MAX_JOBS=2
+          fi
+          
+          echo "🚀 开始编译LibreELEC 12.2，CPU核心数：${TOTAL_CORES}，使用核心数：${MAX_JOBS}"
+          # 执行编译（失败后单核心重试）
+          make image PROJECT=${{ env.PROJECT_NAME }} ARCH=${{ env.ARCH }} DEVICE=${{ env.DEVICE_NAME }} -j${MAX_JOBS} || \
+          make image PROJECT=${{ env.PROJECT_NAME }} ARCH=${{ env.ARCH }} DEVICE=${{ env.DEVICE_NAME }} -j1
+
+      - name: 📦 整理编译产物（精准匹配T1镜像）
+        run: |
+          cd ${{ env.LIBREELEC_SRC_DIR }}
+          # 精准查找AMLGX系列镜像（排除debug版本）
+          TARGET_IMG=$(find target -name "LibreELEC-AMLGX-*.img.gz" -type f | grep -v "debug" | head -1)
+          
+          if [ -n "${TARGET_IMG}" ]; then
+            # 重命名为易识别的文件名
+            cp -v "${TARGET_IMG}" "target/${{ env.IMAGE_NAME }}"
+            # 验证文件大小（避免空文件）
+            FILE_SIZE=$(du -h "target/${{ env.IMAGE_NAME }}" | awk '{print $1}')
+            echo "✅ 镜像整理完成：${{ env.IMAGE_NAME }} (大小：${FILE_SIZE})"
+            ls -lh target/${{ env.IMAGE_NAME }}
+          else
+            echo "❌ 错误：未找到AMLGX系列编译镜像"
+            ls -lh target/
+            exit 1
+          fi
+
+      - name: 📤 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: built-image
+          path: |
+            ${{ env.LIBREELEC_SRC_DIR }}/target/${{ env.IMAGE_NAME }}
+            ${{ env.LIBREELEC_SRC_DIR }}/target/*.kernel
+            ${{ env.LIBREELEC_SRC_DIR }}/target/*.system
+            ${{ env.LIBREELEC_SRC_DIR }}/build.log
+          if: always()  # 即使编译失败也上传日志
+
+  # ========== 阶段3：归档与校验 ==========
+  archive-release:
+    runs-on: ubuntu-22.04
+    needs: build-image
+    timeout-minutes: 30
+    steps:
+      - name: 📥 下载编译产物
+        uses: actions/download-artifact@v4
+        with:
+          name: built-image
+          path: ${{ env.WORKSPACE }}/build-output
+
+      - name: 📦 生成校验文件并整理发布包
+        run: |
+          # 创建发布目录
+          mkdir -p ${{ env.WORKSPACE }}/release
+          # 复制镜像文件
+          IMG_PATH="${{ env.WORKSPACE }}/build-output/${{ env.IMAGE_NAME }}"
+          if [ -f "${IMG_PATH}" ]; then
+            cp -v "${IMG_PATH}" "${{ env.WORKSPACE }}/release/"
+            cd ${{ env.WORKSPACE }}/release
+            # 生成MD5/SHA256校验文件
+            md5sum "${{ env.IMAGE_NAME }}" > "${{ env.IMAGE_NAME }}.md5"
+            sha256sum "${{ env.IMAGE_NAME }}" > "${{ env.IMAGE_NAME }}.sha256"
+            # 验证校验文件
+            echo "✅ 校验文件生成完成："
+            cat "${{ env.IMAGE_NAME }}.md5"
+            cat "${{ env.IMAGE_NAME }}.sha256"
+            # 列出最终产物
+            echo "📦 最终发布包内容："
+            ls -lh
+          else
+            echo "❌ 错误：未找到编译好的镜像文件"
+            ls -lh ${{ env.WORKSPACE }}/build-output/
+            exit 1
+          fi
+
+      - name: 📤 上传最终发布包
+        uses: actions/upload-artifact@v4
+        with:
+          name: phicomm-t1-librelec-12.2-release
+          path: ${{ env.WORKSPACE }}/release/
+          retention-days: 7  # 发布包保留7天
+        if: always()
