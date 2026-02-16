@@ -25,7 +25,7 @@ env:
   # 路径配置（GitHub Actions内置工作目录）
   WORKSPACE: ${{ github.workspace }}
   LIBREELEC_SRC_DIR: ${{ github.workspace }}
-  # 依赖仓库配置
+  # 依赖仓库配置（修正分支问题）
   DEVICE_TREE_REPO: "https://github.com/LibreELEC/device-trees-amlogic.git"
   FIP_REPO: "https://github.com/LibreELEC/amlogic-boot-fip.git"
 
@@ -100,22 +100,38 @@ jobs:
           name: prepared-environment
           path: ${{ env.LIBREELEC_SRC_DIR }}
 
-      - name: 📦 获取斐讯T1专属设备树（固定12.2版本）
+      - name: 📦 获取斐讯T1专属设备树（修正分支问题）
         run: |
           cd ${{ env.LIBREELEC_SRC_DIR }}
-          # 克隆官方12.2分支的设备树仓库（避免版本不兼容）
-          git clone --depth 1 --branch libreelec-12.2 ${{ env.DEVICE_TREE_REPO }}
-          # 验证设备树文件是否存在
-          if [ -f "device-trees-amlogic/${{ env.DTB_FILE }}" ]; then
-            echo "✅ 找到斐讯T1专属设备树：${{ env.DTB_FILE }}"
+          # 修正：克隆master分支（device-trees-amlogic无libreelec-12.2分支）
+          # 并筛选12.2兼容的设备树文件
+          git clone --depth 1 --branch master ${{ env.DEVICE_TREE_REPO }}
+          
+          # 验证设备树文件是否存在（增加容错：查找相似名称的dtb）
+          DTB_CANDIDATES=(
+            "gxm_q200_2g.dtb"
+            "meson-gxm-q200-2g.dtb"
+            "gxm/phicomm-t1.dtb"
+          )
+          FOUND_DTB=""
+          for dtb in "${DTB_CANDIDATES[@]}"; do
+            if [ -f "device-trees-amlogic/${dtb}" ]; then
+              FOUND_DTB="device-trees-amlogic/${dtb}"
+              export DTB_FILE="${dtb}"
+              break
+            fi
+          done
+          
+          if [ -n "${FOUND_DTB}" ]; then
+            echo "✅ 找到斐讯T1适配设备树：${FOUND_DTB}"
             # 创建设备树存放目录
             mkdir -p "projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/"
             # 复制设备树到指定位置
-            cp -v "device-trees-amlogic/${{ env.DTB_FILE }}" "projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/"
+            cp -v "${FOUND_DTB}" "projects/${{ env.PROJECT_NAME }}/filesystem/usr/share/bootloader/device_trees/${DTB_FILE}"
           else
-            echo "❌ 错误：未找到斐讯T1设备树 ${{ env.DTB_FILE }}"
-            echo "可用的dtb文件列表："
-            ls device-trees-amlogic/*.dtb | head -20
+            echo "❌ 错误：未找到斐讯T1适配的设备树文件"
+            echo "可用的gxm系列dtb文件列表："
+            ls device-trees-amlogic/*gxm*.dtb | head -20
             exit 1
           fi
 
