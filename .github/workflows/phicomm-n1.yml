@@ -26,40 +26,17 @@ jobs:
           libxml2-utils xsltproc \
           bc swig python3 python3-distutils \
           libssl-dev libcap-dev \
-          ccache
+          ccache \
+          xfonts-utils \
+          rdfind \
+          libparse-yapp-perl \
+          libxml-parser-perl \
+          patchutils \
+          lzop
 
-    # 诊断：列出可用的项目和设备
-    - name: 诊断可用的构建目标
-      run: |
-        echo "=== 可用的项目 ==="
-        ls projects/
-        echo "=== Amlogic 项目下的设备 ==="
-        ls projects/Amlogic/devices/ || echo "没有 devices 目录，可能是新版结构"
-        echo "=== 检查是否存在 AMLGX 设备 ==="
-        if [ -d "projects/Amlogic/devices/AMLGX" ]; then
-          echo "✅ 找到 AMLGX 设备"
-        else
-          echo "❌ 未找到 AMLGX，尝试查找其他设备"
-          ls projects/Amlogic/devices/ 2>/dev/null || echo "可能设备定义在别处"
-        fi
-        # 也检查一下 projects/Amlogic/options 文件内容
-        if [ -f "projects/Amlogic/options" ]; then
-          echo "=== projects/Amlogic/options 内容 ==="
-          cat projects/Amlogic/options
-        fi
-
-    # 根据诊断结果，使用正确的编译命令
-    # 注意：如果 AMLGX 不存在，可能需要使用通用的 Amlogic 构建（不指定 DEVICE）
     - name: 执行编译
       run: |
-        # 如果存在 AMLGX 设备，则指定 DEVICE，否则只设置 PROJECT 和 ARCH
-        if [ -d "projects/Amlogic/devices/AMLGX" ]; then
-          echo "使用 DEVICE=AMLGX"
-          PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
-        else
-          echo "未找到 AMLGX 设备，尝试不指定 DEVICE（默认设备）"
-          PROJECT=Amlogic ARCH=aarch64 make image
-        fi
+        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
 
     - name: 验证内核格式
       run: |
