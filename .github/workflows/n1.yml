@@ -1,0 +1,65 @@
+name: Build LibreELEC for Phicomm N1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: 释放runner磁盘空间
+      run: |
+        sudo rm -rf /usr/local/lib/android /opt/ghc
+        sudo apt clean
+        df -h
+
+    - name: 签出代码
+      uses: actions/checkout@v4
+      with:
+        repository: LibreELEC/LibreELEC.tv
+        fetch-depth: 1
+
+    - name: 安装编译依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          make gcc g++ git texinfo build-essential curl wget \
+          gperf bison flex libtool libxml2-utils xsltproc \
+          bc swig python3 python3-distutils libssl-dev libcap-dev \
+          ccache xfonts-utils rdfind libparse-yapp-perl libxml-parser-perl patchutils lzop
+
+    - name: 执行编译（N1专用）
+      run: |
+        PROJECT=Amlogic ARCH=aarch64 DEVICE=S905 make image
+
+    - name: 查找并验证内核
+      run: |
+        KERNEL_FILE=$(find target/ -name "uImage" | head -n 1)
+        if [ -f "$KERNEL_FILE" ]; then
+          echo "✅ 找到内核: $KERNEL_FILE"
+          file "$KERNEL_FILE"
+        else
+          echo "❌ 未找到内核 uImage"
+          exit 1
+        fi
+
+    - name: 生成版本号与文件名
+      id: version
+      run: |
+        echo "TAG=LibreELEC-N1-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+        echo "NAME=LibreELEC 斐讯N1镜像 $(date +'%Y年%m月%d日')" >> $GITHUB_OUTPUT
+
+    - name: 上传到 GitHub Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        name: ${{ steps.version.outputs.NAME }}
+        tag_name: ${{ steps.version.outputs.TAG }}
+        files: target/*.img.gz
+        draft: false
+        prerelease: false
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
