@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    # 直接使用 Ubuntu 22.04 运行器，不通过 Docker 容器
+    # 直接使用 Ubuntu 22.04 运行器，不再使用 Docker 容器
     runs-on: ubuntu-22.04
 
     steps:
@@ -20,7 +20,6 @@ jobs:
     - name: 安装编译依赖
       run: |
         sudo apt-get update
-        # 官方文档推荐的依赖包列表[citation:1]
         sudo apt-get install -y \
           make gcc g++ git texinfo \
           build-essential curl wget \
@@ -30,10 +29,10 @@ jobs:
           libssl-dev libcap-dev \
           ccache
 
-    # 关键：使用 AMLGX 设备，ARCH 为 aarch64
+    # 关键修改：添加 DEVICE=AMLGX 参数
     - name: 执行编译
       run: |
-        PROJECT=Amlogic ARCH=aarch64 make image
+        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
 
     - name: 验证内核格式
       run: |
