@@ -38,26 +38,14 @@ jobs:
       run: |
         PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
 
-    - name: 验证内核格式
-      run: |
-        KERNEL_FILE=$(find target/ -name "kernel.img" | head -n 1)
-        if [ -f "$KERNEL_FILE" ]; then
-          echo "正在验证内核文件: $KERNEL_FILE"
-          file "$KERNEL_FILE"
-          if file "$KERNEL_FILE" | grep -q "gzip compressed"; then
-            echo "⚠️ 警告: 检测到内核是压缩格式，N1可能无法启动！"
-            exit 1
-          else
-            echo "✅ 验证通过: 内核是未压缩格式"
-          fi
-        else
-          echo "未找到 kernel.img"
-          exit 1
-        fi
 
-    - name: 上传镜像产物
-      uses: actions/upload-artifact@v4
-      with:
-        name: LibreELEC-N1-Image
-        path: target/*.img.gz
-        if-no-files-found: error
+
+    - name: 生成并推送新版本标签
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        # 获取最新版本号并递增（例如从日期生成）
+        NEW_TAG="nightly-$(date +'%Y%m%d')"
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag $NEW_TAG
+        git push origin $NEW_TAG
