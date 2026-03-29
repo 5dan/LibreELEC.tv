@@ -1,14 +1,16 @@
 name: Build LibreELEC for Phicomm N1
 
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
   push:
     branches: [ "master" ]
 
 jobs:
   build:
-    # 使用 Ubuntu 22.04 (Jammy) 而非 24.04，因为 22.04 仍包含 python3-distutils
-    runs-on: ubuntu-22.04-arm
+    runs-on: ubuntu-latest
+    container:
+      image: libreelec/ubuntu:jammy
+      options: --user root
 
     steps:
     - name: 签出代码
@@ -17,22 +19,10 @@ jobs:
         repository: LibreELEC/LibreELEC.tv
         fetch-depth: 1
 
-    # 缓存编译产物，加速二次构建
-    - name: 缓存编译工具链与源码
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.ccache
-          build.*/sources
-          build.*/toolchain
-        key: libreelec-n1-cache-${{ github.run_id }}
-        restore-keys: |
-          libreelec-n1-cache-
-
     - name: 安装编译依赖
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
+        apt-get update
+        apt-get install -y \
           make gcc g++ git texinfo \
           build-essential curl wget \
           gperf bison flex libtool \
@@ -41,27 +31,25 @@ jobs:
           libssl-dev libcap-dev \
           ccache
 
-    - name: 执行编译（指定 N1 型号）
+    # 关键修改：移除 DEVICE=Phicomm-N1，并将 ARCH 改为 aarch64
+    - name: 执行编译
       run: |
-        # PROJECT: Amlogic 芯片方案
-        # ARCH: arm 架构
-        # DEVICE: Phicomm-N1 具体型号
-        PROJECT=Amlogic ARCH=arm DEVICE=Phicomm-N1 make image
+        PROJECT=Amlogic ARCH=aarch64 make image
 
-    - name: 验证内核格式（确保 N1 可启动）
+    - name: 验证内核格式
       run: |
         KERNEL_FILE=$(find target/ -name "kernel.img" | head -n 1)
         if [ -f "$KERNEL_FILE" ]; then
           echo "正在验证内核文件: $KERNEL_FILE"
           file "$KERNEL_FILE"
           if file "$KERNEL_FILE" | grep -q "gzip compressed"; then
-            echo "⚠️ 警告: 检测到内核是压缩格式 (zImage)，N1 可能无法启动！"
+            echo "⚠️ 警告: 检测到内核是压缩格式，N1可能无法启动！"
             exit 1
           else
-            echo "✅ 验证通过: 内核是未压缩格式 (Image)，符合 N1 要求。"
+            echo "✅ 验证通过: 内核是未压缩格式"
           fi
         else
-          echo "未找到 kernel.img，请检查编译日志"
+          echo "未找到 kernel.img"
           exit 1
         fi
 
