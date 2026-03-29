@@ -1,14 +1,14 @@
 name: Build LibreELEC for Phicomm N1
 
 on:
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:  # 手动触发
   push:
     branches: [ "master" ]
 
 jobs:
   build:
-    # 使用 ARM64 原生运行器，编译效率比模拟器高约 75%
-    runs-on: ubuntu-24.04-arm
+    # 使用 Ubuntu 22.04 (Jammy) 而非 24.04，因为 22.04 仍包含 python3-distutils
+    runs-on: ubuntu-22.04-arm
 
     steps:
     - name: 签出代码
@@ -17,7 +17,7 @@ jobs:
         repository: LibreELEC/LibreELEC.tv
         fetch-depth: 1
 
-    # 关键优化：缓存编译产物，二次编译可缩短至 30 分钟内
+    # 缓存编译产物，加速二次构建
     - name: 缓存编译工具链与源码
       uses: actions/cache@v4
       with:
@@ -37,7 +37,7 @@ jobs:
           build-essential curl wget \
           gperf bison flex libtool \
           libxml2-utils xsltproc \
-          bc swig python3-distutils \
+          bc swig python3 python3-distutils \
           libssl-dev libcap-dev \
           ccache
 
@@ -46,12 +46,10 @@ jobs:
         # PROJECT: Amlogic 芯片方案
         # ARCH: arm 架构
         # DEVICE: Phicomm-N1 具体型号
-        # 此配置会触发源码中的 N1 预设，生成未压缩 Image 内核
         PROJECT=Amlogic ARCH=arm DEVICE=Phicomm-N1 make image
 
     - name: 验证内核格式（确保 N1 可启动）
       run: |
-        # 查找编译生成的 kernel.img
         KERNEL_FILE=$(find target/ -name "kernel.img" | head -n 1)
         if [ -f "$KERNEL_FILE" ]; then
           echo "正在验证内核文件: $KERNEL_FILE"
