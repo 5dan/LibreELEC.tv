@@ -1,0 +1,75 @@
+name: Build LibreELEC for Phicomm N1
+
+on:
+  workflow_dispatch:  # 支持手动触发
+  push:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    # 使用 ARM64 原生运行器，编译效率比模拟器高约 75%
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+    - name: 签出代码
+      uses: actions/checkout@v4
+      with:
+        repository: LibreELEC/LibreELEC.tv
+        fetch-depth: 1
+
+    # 关键优化：缓存编译产物，二次编译可缩短至 30 分钟内
+    - name: 缓存编译工具链与源码
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.ccache
+          build.*/sources
+          build.*/toolchain
+        key: libreelec-n1-cache-${{ github.run_id }}
+        restore-keys: |
+          libreelec-n1-cache-
+
+    - name: 安装编译依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          make gcc g++ git texinfo \
+          build-essential curl wget \
+          gperf bison flex libtool \
+          libxml2-utils xsltproc \
+          bc swig python3-distutils \
+          libssl-dev libcap-dev \
+          ccache
+
+    - name: 执行编译（指定 N1 型号）
+      run: |
+        # PROJECT: Amlogic 芯片方案
+        # ARCH: arm 架构
+        # DEVICE: Phicomm-N1 具体型号
+        # 此配置会触发源码中的 N1 预设，生成未压缩 Image 内核
+        PROJECT=Amlogic ARCH=arm DEVICE=Phicomm-N1 make image
+
+    - name: 验证内核格式（确保 N1 可启动）
+      run: |
+        # 查找编译生成的 kernel.img
+        KERNEL_FILE=$(find target/ -name "kernel.img" | head -n 1)
+        if [ -f "$KERNEL_FILE" ]; then
+          echo "正在验证内核文件: $KERNEL_FILE"
+          file "$KERNEL_FILE"
+          if file "$KERNEL_FILE" | grep -q "gzip compressed"; then
+            echo "⚠️ 警告: 检测到内核是压缩格式 (zImage)，N1 可能无法启动！"
+            exit 1
+          else
+            echo "✅ 验证通过: 内核是未压缩格式 (Image)，符合 N1 要求。"
+          fi
+        else
+          echo "未找到 kernel.img，请检查编译日志"
+          exit 1
+        fi
+
+    - name: 上传镜像产物
+      uses: actions/upload-artifact@v4
+      with:
+        name: LibreELEC-N1-Image
+        path: target/*.img.gz
+        if-no-files-found: error
