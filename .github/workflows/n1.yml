@@ -34,39 +34,32 @@ jobs:
           patchutils \
           lzop
 
-    - name: 执行编译
+    - name: 执行编译（带 box 配置）
       run: |
-        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
+        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX UBOOT_SYSTEM=box make image
 
-
-
-
-
-    - name: 查找并验证内核
+    # 修正后的验证步骤：检查生成的镜像文件
+    - name: 验证编译产物
       run: |
-        KERNEL_FILE=$(find target/ -name "uImage" | head -n 1)
-        if [ -f "$KERNEL_FILE" ]; then
-          echo "✅ 找到内核: $KERNEL_FILE"
-          file "$KERNEL_FILE"
-        else
-          echo "❌ 未找到内核 uImage"
+        echo "=== target 目录内容 ==="
+        ls -la target/
+        
+        # 统计生成的镜像数量
+        IMG_COUNT=$(find target/ -name "*.img.gz" | wc -l)
+        echo "找到 $IMG_COUNT 个镜像文件"
+        
+        if [ $IMG_COUNT -eq 0 ]; then
+          echo "❌ 错误：没有找到任何镜像文件"
           exit 1
+        else
+          echo "✅ 成功生成镜像文件"
+          # 列出所有镜像
+          find target/ -name "*.img.gz" -exec basename {} \;
         fi
 
-    - name: 生成版本号与文件名
-      id: version
-      run: |
-        echo "TAG=LibreELEC-N1-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-        echo "NAME=LibreELEC 斐讯N1镜像 $(date +'%Y年%m月%d日')" >> $GITHUB_OUTPUT
-
-    - name: 上传到 GitHub Releases
-      uses: softprops/action-gh-release@v2
+    - name: 上传镜像产物
+      uses: actions/upload-artifact@v4
       with:
-        name: ${{ steps.version.outputs.NAME }}
-        tag_name: ${{ steps.version.outputs.TAG }}
-        files: target/*.img.gz
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        name: LibreELEC-N1-Image
+        path: target/*.img.gz
+        if-no-files-found: error
