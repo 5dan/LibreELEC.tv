@@ -57,9 +57,18 @@ jobs:
           find target/ -name "*.img.gz" -exec basename {} \;
         fi
 
-    - name: 上传镜像产物
-      uses: actions/upload-artifact@v4
+    # 上传到 Releases
+    - name: 创建或更新 Release 并上传镜像
+      uses: softprops/action-gh-release@v2
       with:
-        name: LibreELEC-N1-Image
-        path: target/*.img.gz
-        if-no-files-found: error
+        # 如果是推送标签，使用标签名作为 Release 名称；否则使用 "Nightly"
+        tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
+        name: ${{ github.ref_type == 'tag' && format('LibreELEC N1 {0}', github.ref_name) || 'LibreELEC N1 Nightly' }}
+        # 标记为预发布版本（适用于 Nightly）
+        prerelease: ${{ github.ref_type != 'tag' }}
+        # 要上传的文件
+        files: target/*.img.gz
+        # 允许覆盖已有的同名 Release（主要是为了更新 Nightly）
+        overwrite: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
