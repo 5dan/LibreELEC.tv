@@ -1,4 +1,4 @@
-name: Build LibreELEC for Phicomm N1
+name: Build LibreELEC for Phicomm N1 (booti)
 
 on:
   workflow_dispatch:
@@ -8,13 +8,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
 
     steps:
     - name: 签出代码
       uses: actions/checkout@v4
       with:
         repository: LibreELEC/LibreELEC.tv
-        fetch-depth: 1
+        fetch-depth: 0
 
     - name: 安装编译依赖
       run: |
@@ -32,43 +34,73 @@ jobs:
           libparse-yapp-perl \
           libxml-parser-perl \
           patchutils \
-          lzop
+          lzop \
+          kpartx          # 用于挂载镜像
 
-    - name: 执行编译（带 box 配置）
+    - name: 执行编译（生成镜像）
       run: |
         PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX UBOOT_SYSTEM=box make image
 
-    # 修正后的验证步骤：检查生成的镜像文件
+    # ========== 关键步骤：替换 bootm 为 booti ==========
+    - name: 修改启动脚本（bootm -> booti）
+      run: |
+        # 找到生成的镜像文件（只有一个）
+        IMG_GZ=$(find target/ -name "*.img.gz" | head -n 1)
+        if [ -z "$IMG_GZ" ]; then
+          echo "未找到镜像文件，退出"
+          exit 1
+        fi
+        echo "正在处理镜像: $IMG_GZ"
+        
+        # 解压镜像
+        gunzip -c "$IMG_GZ" > /tmp/image.img
+        
+        # 挂载第一个分区（FAT32，包含启动脚本）
+        sudo kpartx -av /tmp/image.img
+        # 假设第一个分区映射为 /dev/mapper/loop0p1，实际名称可通过 ls /dev/mapper/ 查看
+        LOOP_DEV=$(sudo kpartx -l /tmp/image.img | head -n1 | awk '{print $1}')
+        sudo mount "/dev/mapper/$LOOP_DEV" /mnt
+        
+        # 检查是否存在 boot.scr 和 emmc_autoscript
+        cd /mnt
+        for SCR in boot.scr emmc_autoscript; do
+          if [ -f "$SCR" ]; then
+            echo "处理 $SCR"
+            # 反编译：去掉 U-Boot 头，得到原始脚本
+            dd if="$SCR" of="${SCR}.cmd" bs=64 skip=1 2>/dev/null
+            # 将 bootm 替换为 booti（注意保留参数）
+            sed -i 's/bootm/booti/g' "${SCR}.cmd"
+            # 重新编译为 U-Boot 脚本
+            mkimage -A arm64 -T script -C none -n "N1 boot script" -d "${SCR}.cmd" "$SCR"
+            rm -f "${SCR}.cmd"
+          fi
+        done
+        
+        # 清理挂载
+        cd /
+        sudo umount /mnt
+        sudo kpartx -dv /tmp/image.img
+        
+        # 重新压缩镜像
+        gzip -c /tmp/image.img > "$IMG_GZ"
+        
+        echo "✅ 启动脚本修改完成"
+
     - name: 验证编译产物
       run: |
         echo "=== target 目录内容 ==="
         ls -la target/
-        
-        # 统计生成的镜像数量
         IMG_COUNT=$(find target/ -name "*.img.gz" | wc -l)
-        echo "找到 $IMG_COUNT 个镜像文件"
-        
-        if [ $IMG_COUNT -eq 0 ]; then
-          echo "❌ 错误：没有找到任何镜像文件"
-          exit 1
-        else
-          echo "✅ 成功生成镜像文件"
-          # 列出所有镜像
-          find target/ -name "*.img.gz" -exec basename {} \;
-        fi
+        echo "找到 $IMG_COUNT 个镜像"
+        find target/ -name "*.img.gz" -exec basename {} \;
 
-    # 上传到 Releases
-    - name: 创建或更新 Release 并上传镜像
+    - name: 上传到 Releases
       uses: softprops/action-gh-release@v2
       with:
-        # 如果是推送标签，使用标签名作为 Release 名称；否则使用 "Nightly"
-        tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
-        name: ${{ github.ref_type == 'tag' && format('LibreELEC N1 {0}', github.ref_name) || 'LibreELEC N1 Nightly' }}
-        # 标记为预发布版本（适用于 Nightly）
-        prerelease: ${{ github.ref_type != 'tag' }}
-        # 要上传的文件
+        tag_name: nightly
+        name: LibreELEC N1 Nightly (booti)
+        prerelease: true
         files: target/*.img.gz
-        # 允许覆盖已有的同名 Release（主要是为了更新 Nightly）
         overwrite: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
