@@ -1,20 +1,24 @@
 name: Build LibreELEC for Phicomm N1
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:          # 手动触发，生成 Nightly 版本
   push:
-    branches: [ "master" ]
+    tags:                     # 推送标签时生成正式版本
+      - 'v*'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # 关键：授予写入 Releases 的权限
+    permissions:
+      contents: write
 
     steps:
     - name: 签出代码
       uses: actions/checkout@v4
       with:
         repository: LibreELEC/LibreELEC.tv
-        fetch-depth: 1
+        fetch-depth: 0        # 需要完整历史以获取版本信息
 
     - name: 安装编译依赖
       run: |
@@ -34,18 +38,35 @@ jobs:
           patchutils \
           lzop
 
-    - name: 执行编译
+    - name: 执行编译（为 N1 生成单个镜像）
       run: |
-        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX make image
+        PROJECT=Amlogic ARCH=aarch64 DEVICE=AMLGX UBOOT_SYSTEM=box make image
 
-
-
-    - name: 生成并推送新版本标签
-      if: github.event_name == 'workflow_dispatch'
+    - name: 验证编译产物
       run: |
-        # 获取最新版本号并递增（例如从日期生成）
-        NEW_TAG="nightly-$(date +'%Y%m%d')"
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-        git tag $NEW_TAG
-        git push origin $NEW_TAG
+        echo "=== target 目录内容 ==="
+        ls -la target/
+        IMG_COUNT=$(find target/ -name "*.img.gz" | wc -l)
+        if [ $IMG_COUNT -eq 0 ]; then
+          echo "❌ 没有找到镜像文件"
+          exit 1
+        else
+          echo "✅ 找到 $IMG_COUNT 个镜像"
+          find target/ -name "*.img.gz" -exec basename {} \;
+        fi
+
+    # 上传到 Releases
+    - name: 创建或更新 Release 并上传镜像
+      uses: softprops/action-gh-release@v2
+      with:
+        # 如果是推送标签，使用标签名作为 Release 名称；否则使用 "Nightly"
+        tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
+        name: ${{ github.ref_type == 'tag' && format('LibreELEC N1 {0}', github.ref_name) || 'LibreELEC N1 Nightly' }}
+        # 标记为预发布版本（适用于 Nightly）
+        prerelease: ${{ github.ref_type != 'tag' }}
+        # 要上传的文件
+        files: target/*.img.gz
+        # 允许覆盖已有的同名 Release（主要是为了更新 Nightly）
+        overwrite: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
